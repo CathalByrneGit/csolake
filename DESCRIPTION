@@ -32,6 +32,6 @@ Suggests:
     rmarkdown,
     withr
 Config/testthat/edition: 3
-URL: https://github.com/cso-ie/csolake
-BugReports: https://github.com/cso-ie/csolake/issues
+URL: https://github.com/CathalByrneGit/csolake
+BugReports: https://github.com/CathalByrneGit/csolake/issues
 VignetteBuilder: knitr
