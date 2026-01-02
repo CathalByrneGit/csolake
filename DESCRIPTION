@@ -1,0 +1,33 @@
+Package: csolake
+Title: CSO Data Lake Infrastructure for R
+Version: 0.1.0
+Authors@R: 
+    person("Cathal", "Byrne", email = "cathal.byrne@cso.ie", role = c("aut", "cre"))
+Description: Provides a unified interface for working with CSO data infrastructure.
+    Supports two storage backends: a hive-partitioned parquet lake (similar to 
+    existing SAS storage) and DuckLake (with time travel capabilities). Facilitates
+    data sharing between sections with built-in governance, access control via
+    file system permissions, and dataset publishing workflows.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    DBI,
+    duckdb (>= 0.10.0),
+    dplyr,
+    glue,
+    dbplyr
+Suggests:
+    fs,
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown,
+    withr,
+    arrow
+Config/testthat/edition: 3
+URL: https://github.com/cso-ie/csolake
+BugReports: https://github.com/cso-ie/csolake/issues
+VignetteBuilder: knitr
