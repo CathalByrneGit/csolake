@@ -1,0 +1,642 @@
+# Data Lake Concepts
+
+This vignette explains the core concepts behind `csolake` - what data
+lakes are, how hive partitioning works, and what DuckLake brings to the
+table. No prior knowledge assumed.
+
+## The Problem We’re Solving
+
+At CSO, different sections need to share data:
+
+- **Trade** produces import/export figures that **National Accounts**
+  needs
+- **Labour** produces employment data that multiple sections consume
+- **Health** produces statistics that feed into other analyses
+
+Currently, this happens through shared network drives with folder-based
+access control. It works, but has limitations:
+
+- No versioning (if someone overwrites a file, the old version is gone)
+- No way to know when data changed or who changed it
+- Large files are slow to query (must read the whole thing)
+- No schema enforcement (columns can change without warning)
+
+`csolake` addresses these issues while keeping the familiar
+folder-and-permissions model that IT already supports.
+
+------------------------------------------------------------------------
+
+## What is a Data Lake?
+
+A **data lake** is a storage system designed to hold large amounts of
+structured data in files (typically Parquet format) rather than in a
+traditional database.
+
+    Traditional Database          Data Lake
+    ┌─────────────────┐          ┌─────────────────┐
+    │  Database       │          │  Files on disk  │
+    │  Server         │          │  (Parquet)      │
+    │                 │          │                 │
+    │  ┌───────────┐  │          │  📁 Trade/      │
+    │  │ Table A   │  │          │    📄 data.parquet
+    │  ├───────────┤  │          │  📁 Labour/     │
+    │  │ Table B   │  │          │    📄 data.parquet
+    │  └───────────┘  │          │                 │
+    └─────────────────┘          └─────────────────┘
+         ↓                              ↓
+      Needs server               Just files!
+      Needs DBA                  Query with DuckDB
+      Licensing costs            Free & fast
+
+**Why Parquet?**
+
+Parquet is a columnar file format that’s:
+
+- **Compressed** - files are 5-10x smaller than CSV
+- **Fast** - only reads the columns you need
+- **Typed** - preserves data types (dates, numbers, strings)
+- **Universal** - works with R, Python, SAS, Excel, and more
+
+------------------------------------------------------------------------
+
+## Hive Partitioning Explained
+
+**Hive partitioning** is a way of organising files into folders based on
+column values. The folder names encode the data they contain.
+
+### Example: Trade Imports Data
+
+Instead of one massive file:
+
+    Trade/Imports/all_data.parquet  (10 GB - slow to read!)
+
+We partition by year and month:
+
+    Trade/Imports/
+      year=2023/
+        month=01/
+          data.parquet
+          data_part2.parquet
+        month=02/
+          data.parquet
+        ...
+      year=2024/
+        month=01/
+          data.parquet
+        ...
+
+### Why This Matters
+
+When you query for January 2024 data:
+
+``` r
+imports |> 
+  filter(year == 2024, month == 1)
+```
+
+DuckDB is smart enough to **only read the `year=2024/month=01/`
+folder**. It skips all other folders entirely. This is called
+**partition pruning** and it makes queries on large datasets
+dramatically faster.
+
+### Choosing Partition Columns
+
+Good partition columns are:
+
+- **Low cardinality** - not too many unique values (year, month, region)
+- **Frequently filtered** - columns you often use in WHERE clauses
+- **Stable** - values that don’t change for existing records
+
+Bad partition columns:
+
+- **High cardinality** - unique IDs, timestamps with seconds
+- **Rarely filtered** - columns you never filter on
+
+**Rule of thumb**: Aim for partition folders containing 100MB - 1GB of
+data each.
+
+### How csolake Uses Hive Partitioning
+
+``` r
+# Write with partitioning
+db_hive_write(
+  my_data,
+  section = "Trade",
+  dataset = "Imports",
+  partition_by = c("year", "month")  # Creates year=X/month=Y folders
+)
+
+# Read - partitions are automatic columns
+imports <- db_hive_read("Trade", "Imports")
+imports |> filter(year == 2024)  # Only reads 2024 folders
+```
+
+------------------------------------------------------------------------
+
+## What is DuckLake?
+
+**DuckLake** is a newer approach that adds database-like features on top
+of Parquet files. Think of it as “Parquet files with superpowers”.
+
+    Hive Partitioning              DuckLake
+    ┌─────────────────┐          ┌─────────────────┐
+    │ Just files      │          │ Files +         │
+    │                 │          │ Metadata catalog│
+    │ 📁 year=2024/   │          │                 │
+    │   📄 data.parquet          │ 📄 catalog.sqlite
+    │                 │          │ 📁 data/        │
+    │ No versioning   │          │   📄 file1.parquet
+    │ No transactions │          │   📄 file2.parquet
+    │                 │          │                 │
+    └─────────────────┘          │ ✅ Versioning   │
+                                 │ ✅ Transactions │
+                                 │ ✅ Time travel  │
+                                 └─────────────────┘
+
+### The Metadata Catalog
+
+DuckLake needs a place to store metadata about your tables. This
+**catalog** tracks:
+
+- Which Parquet files belong to which table
+- The schema (columns and types) of each table
+- A history of all changes (snapshots)
+- Who made changes and when
+
+The actual data is still in Parquet files - DuckLake just adds a
+management layer.
+
+------------------------------------------------------------------------
+
+## Choosing a Catalog Backend
+
+DuckLake supports three different backends for storing this catalog
+metadata:
+
+### 1. DuckDB (Single User)
+
+``` r
+db_lake_connect(
+  catalog_type = "duckdb",
+  metadata_path = "metadata.ducklake",
+  data_path = "//CSO-NAS/DataLake/data"
+)
+```
+
+- Metadata stored in a `.ducklake` file
+- **Single client only** - if two people connect, one will fail
+- Good for: personal use, development, testing
+
+### 2. SQLite (Multiple Local Users) - RECOMMENDED
+
+``` r
+db_lake_connect(
+  catalog_type = "sqlite",
+  metadata_path = "//CSO-NAS/DataLake/catalog.sqlite",
+  data_path = "//CSO-NAS/DataLake/data"
+)
+```
+
+- Metadata stored in a `.sqlite` file on the network drive
+- **Multiple readers + single writer** with automatic retry
+- Still just a file - no server needed
+- Good for: **shared network drives, most CSO use cases**
+
+**How SQLite handles concurrency:**
+
+When someone is writing, other writers will wait and retry
+automatically. Readers can continue uninterrupted. This works well for
+typical usage where writes are less frequent than reads.
+
+### 3. PostgreSQL (Multi-User Lakehouse)
+
+``` r
+db_lake_connect(
+  catalog_type = "postgres",
+  metadata_path = "dbname=ducklake_catalog host=db.cso.ie",
+  data_path = "//CSO-NAS/DataLake/data"
+)
+```
+
+- Metadata stored in a PostgreSQL database
+- **Full concurrent access** - multiple readers and writers
+- Requires PostgreSQL 12+ server
+- Good for: large teams, high write concurrency, remote access
+
+### Which Should You Choose?
+
+    Are you the only user?
+      └─ Yes → DuckDB (simplest)
+      └─ No → Are you on a shared network drive?
+                └─ Yes → SQLite (recommended)
+                └─ No → Do you need high write concurrency?
+                          └─ Yes → PostgreSQL
+                          └─ No → SQLite
+
+**For most CSO use cases, start with SQLite.** It’s still just a file
+(familiar, works with IT permissions), but handles multiple users
+gracefully.
+
+------------------------------------------------------------------------
+
+## Key DuckLake Features
+
+### 1. Time Travel
+
+Query data as it existed at any point in the past:
+
+``` r
+# Current data
+products <- db_lake_read(table = "products")
+
+# Data as of version 5
+products_v5 <- db_lake_read(table = "products", version = 5)
+
+# Data as of last Tuesday
+products_tue <- db_lake_read(table = "products", 
+                              timestamp = "2025-01-14 00:00:00")
+```
+
+This is invaluable when:
+
+- Someone reports “the numbers looked different yesterday” - you can
+  check!
+- You need to reproduce an analysis from a specific date
+- Something went wrong and you need to see the before/after
+
+### 2. Snapshots and Audit Trail
+
+Every change creates a new **snapshot** with metadata:
+
+``` r
+db_snapshots()
+#>   snapshot_id snapshot_time       commit_author commit_message
+#> 1           1 2025-01-01 09:00:00 jsmith        Initial load
+#> 2           2 2025-01-15 14:30:00 mjones        Added Q4 data
+#> 3           3 2025-01-20 11:00:00 mjones        Fixed country codes
+```
+
+You always know what changed, when, and (if recorded) why.
+
+### 3. ACID Transactions
+
+Changes are **atomic** - they either fully succeed or fully fail. No
+partial updates that leave data in a broken state.
+
+``` r
+# If this fails halfway through, no data is changed
+db_lake_write(big_dataset, table = "imports", mode = "overwrite")
+```
+
+### 4. Schema Evolution
+
+DuckLake handles schema changes gracefully:
+
+- Add a new column? Old data gets NULLs for that column
+- Query old versions? They still work with the old schema
+
+------------------------------------------------------------------------
+
+## Schemas: Organising Tables
+
+In DuckLake, **schemas** are like folders for tables. They help organise
+related tables together.
+
+    catalog (cso)
+    ├── main (default schema)
+    │   └── reference_tables
+    ├── trade
+    │   ├── imports
+    │   ├── exports
+    │   └── products
+    ├── labour
+    │   ├── employment
+    │   └── earnings
+    └── health
+        ├── hospitals
+        └── waiting_times
+
+### Using Schemas
+
+``` r
+# Create a schema for your section
+db_create_schema("trade")
+
+# Write to it
+db_lake_write(imports_data, schema = "trade", table = "imports")
+
+# Read from it
+imports <- db_lake_read(schema = "trade", table = "imports")
+
+# List tables in a schema
+db_list_tables("trade")
+```
+
+### Schemas vs Sections
+
+| Hive Mode                                                                                      | DuckLake Mode                                                                                |
+|------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| Section (folder)                                                                               | Schema                                                                                       |
+| Dataset (subfolder)                                                                            | Table                                                                                        |
+| [`db_list_sections()`](https://cathalbyrnegit.github.io/csolake/reference/db_list_sections.md) | [`db_list_schemas()`](https://cathalbyrnegit.github.io/csolake/reference/db_list_schemas.md) |
+| `db_list_datasets("Trade")`                                                                    | `db_list_tables("trade")`                                                                    |
+
+They serve the same organisational purpose - grouping related data
+together.
+
+------------------------------------------------------------------------
+
+## Data Documentation
+
+Good data governance requires documentation. `csolake` provides built-in
+tools to document your datasets and generate a data dictionary.
+
+### Documenting Datasets
+
+``` r
+# Add metadata to a dataset
+db_describe(
+  section = "Trade",
+  dataset = "Imports",
+  description = "Monthly import values by country and HS commodity code",
+  owner = "Trade Section",
+  tags = c("trade", "monthly", "official")
+)
+
+# Document individual columns
+db_describe_column(
+  section = "Trade",
+  dataset = "Imports",
+  column = "value",
+  description = "Import value",
+  units = "EUR (thousands)"
+)
+
+db_describe_column(
+  section = "Trade",
+  dataset = "Imports",
+  column = "country_code",
+  description = "ISO 3166-1 alpha-2 country code"
+)
+```
+
+### Where is Documentation Stored?
+
+- **Hive mode**: Creates a `_metadata.json` file in each dataset folder
+- **DuckLake mode**: Stores in a `_metadata` schema in the catalog
+
+Either way, documentation travels with the data.
+
+### Searching and Discovery
+
+``` r
+# Search datasets by any field
+db_search("trade")                        # Matches name, description, owner, or tags
+db_search("monthly", field = "tags")      # Search only tags
+db_search("Trade Section", field = "owner")  # Find datasets by owner
+
+# Find columns across all datasets
+db_search_columns("country")
+#>   section  dataset  column_name  column_type  column_description
+#> 1 Trade    Imports  country_code VARCHAR      ISO 3166-1 alpha-2...
+#> 2 Trade    Exports  country_code VARCHAR      ISO 3166-1 alpha-2...
+#> 3 Labour   Survey   country      VARCHAR      Country of residence
+```
+
+### Generating a Data Dictionary
+
+``` r
+# Full data dictionary with column details
+dict <- db_dictionary()
+
+# Just dataset-level summary
+dict_summary <- db_dictionary(include_columns = FALSE)
+
+# Filter to specific section
+dict_trade <- db_dictionary(section = "Trade")
+
+# Export to Excel
+writexl::write_xlsx(dict, "data_dictionary.xlsx")
+```
+
+The data dictionary includes: - Dataset/table name and location -
+Description, owner, tags - Column names, types, and documentation - Last
+updated timestamps
+
+------------------------------------------------------------------------
+
+## Preview Before Writing
+
+Before making changes to production data, you can preview what will
+happen:
+
+### Hive Write Preview
+
+``` r
+db_preview_hive_write(
+  my_data,
+  section = "Trade",
+  dataset = "Imports",
+  partition_by = c("year", "month"),
+  mode = "replace_partitions"
+)
+```
+
+Shows: - Target path and whether it exists - Incoming vs existing row
+counts - **Schema changes** - new columns, removed columns, type
+changes - **Partition impact** - which partitions will be affected
+
+### DuckLake Write Preview
+
+``` r
+db_preview_lake_write(my_data, table = "imports", mode = "overwrite")
+```
+
+Shows: - Current vs new row counts - Schema comparison - Warnings (e.g.,
+append to non-existent table)
+
+### Upsert Preview
+
+``` r
+db_preview_upsert(my_data, table = "products", by = "product_id")
+```
+
+Shows: - How many rows will be **inserted** (new keys) - How many rows
+will be **updated** (existing keys) - Warnings about duplicate keys in
+incoming data
+
+------------------------------------------------------------------------
+
+## Comparing the Two Approaches
+
+### When to Use Hive Mode
+
+✅ **Good for:**
+
+- Migrating from existing SAS folder structure
+- Simple data sharing without versioning needs
+- When you need direct file access (for tools that can’t use DuckLake)
+- Getting started quickly with minimal setup
+
+❌ **Limitations:**
+
+- No versioning - overwrites are permanent
+- No transaction safety - partial failures can corrupt data
+- Manual schema management
+
+### When to Use DuckLake Mode
+
+✅ **Good for:**
+
+- Production data pipelines where reliability matters
+- When you need audit trails (who changed what, when)
+- Analyses that need to be reproducible at specific points in time
+- Complex updates (upserts, merges)
+
+❌ **Considerations:**
+
+- Slightly more complex setup (choose catalog backend)
+- Newer technology (less battle-tested than simple files)
+
+------------------------------------------------------------------------
+
+## Access Control
+
+Both modes use **file system permissions** - the same model CSO already
+uses.
+
+### Hive Mode Access
+
+    //CSO-NAS/DataLake/
+    ├── Trade/          ← Trade section has read/write
+    │   ├── Imports/
+    │   └── Exports/
+    ├── Labour/         ← Labour section has read/write
+    │   └── Employment/
+    └── Shared/         ← Everyone has read access
+        └── Reference/
+
+Users get access by being granted folder permissions through IT.
+
+### DuckLake Mode Access
+
+    //CSO-NAS/DataLake/
+    ├── catalog.sqlite      ← Need read (or read/write) access
+    └── data/               ← Need read (or read/write) access
+        ├── trade/
+        └── labour/
+
+**Read access** = can query data **Write access** = can modify data
+
+The permissions work at the file/folder level, just like before.
+
+For PostgreSQL catalogs, you’d also need database credentials - but the
+Parquet data files still use file system permissions.
+
+------------------------------------------------------------------------
+
+## Putting It Together
+
+Here’s how a typical workflow might look:
+
+### Publishing Data (Producer)
+
+``` r
+library(csolake)
+
+# Connect with SQLite catalog
+db_lake_connect(
+  catalog_type = "sqlite",
+  metadata_path = "//CSO-NAS/DataLake/catalog.sqlite",
+  data_path = "//CSO-NAS/DataLake/data"
+)
+
+# Prepare your data
+imports_q1 <- prepare_imports_data(raw_files)
+
+# Preview what will happen
+db_preview_lake_write(imports_q1, schema = "trade", table = "imports", mode = "append")
+
+# Publish with a meaningful commit message
+db_lake_write(
+  imports_q1,
+  schema = "trade",
+  table = "imports",
+  mode = "append",
+  commit_author = Sys.info()["user"],
+  commit_message = "Q1 2025 imports data - final"
+)
+
+# Document your dataset
+db_describe(
+  schema = "trade",
+  table = "imports",
+  description = "Monthly import values by country and HS code",
+  owner = "Trade Section"
+)
+
+db_disconnect()
+```
+
+### Consuming Data (Consumer)
+
+``` r
+library(csolake)
+
+# Connect (read-only access is fine)
+db_lake_connect(
+  catalog_type = "sqlite",
+  metadata_path = "//CSO-NAS/DataLake/catalog.sqlite",
+  data_path = "//CSO-NAS/DataLake/data"
+)
+
+# Discover what's available
+db_list_schemas()
+db_list_tables("trade")
+
+# Search for relevant data
+db_search("imports")
+
+# Check documentation
+db_get_docs(schema = "trade", table = "imports")
+
+# Read and analyse
+imports <- db_lake_read(schema = "trade", table = "imports")
+
+imports |>
+  filter(year == 2025, quarter == 1) |>
+  summarise(total_value = sum(value)) |>
+  collect()
+
+db_disconnect()
+```
+
+------------------------------------------------------------------------
+
+## Glossary
+
+| Term                  | Meaning                                                                         |
+|-----------------------|---------------------------------------------------------------------------------|
+| **Parquet**           | Columnar file format for storing tabular data efficiently                       |
+| **Hive partitioning** | Organising files into folders named by column values (e.g., `year=2024/`)       |
+| **Partition pruning** | Query optimisation that skips irrelevant partition folders                      |
+| **DuckLake**          | Metadata layer that adds versioning and transactions to Parquet files           |
+| **Catalog**           | Database storing DuckLake metadata (can be DuckDB, SQLite, or PostgreSQL)       |
+| **Snapshot**          | A point-in-time version of the data in DuckLake                                 |
+| **Time travel**       | Querying data as it existed at a past version or timestamp                      |
+| **Schema**            | A namespace/folder for organising related tables                                |
+| **ACID**              | Atomicity, Consistency, Isolation, Durability - database reliability guarantees |
+| **Upsert**            | Update existing rows + insert new rows in one operation                         |
+| **Data dictionary**   | Documentation of all datasets, their columns, types, and descriptions           |
+
+------------------------------------------------------------------------
+
+## Next Steps
+
+- See
+  [`vignette("code-walkthrough")`](https://cathalbyrnegit.github.io/csolake/articles/code-walkthrough.md)
+  for detailed explanation of how the package code works
+- Try the examples in the README to get hands-on experience
+- Start with Hive mode if migrating from SAS, move to DuckLake when
+  ready
+- For DuckLake, use SQLite catalog on shared drives

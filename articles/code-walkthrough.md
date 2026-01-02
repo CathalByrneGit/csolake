@@ -1,0 +1,1023 @@
+# Code Walkthrough
+
+This vignette explains how `csolake` works under the hood. It walks
+through each file in the package, explaining what the code does and why
+it’s designed that way.
+
+------------------------------------------------------------------------
+
+## Package Structure
+
+    csolake/
+    ├── DESCRIPTION          # Package metadata
+    ├── NAMESPACE            # Exports and imports
+    ├── LICENSE              # MIT license
+    ├── R/
+    │   ├── db_connect.R     # Connection management
+    │   ├── db_read.R        # Read functions
+    │   ├── db_write.R       # Write functions
+    │   ├── upsert.R         # MERGE operations
+    │   ├── metadata.R       # Snapshot/catalog queries
+    │   ├── discovery.R      # List/exists functions
+    │   ├── maintenance.R    # Vacuum, rollback, diff
+    │   ├── docs.R           # Documentation & data dictionary
+    │   ├── preview.R        # Write preview functions
+    │   ├── browser.R        # Shiny browser launcher
+    │   ├── browser_ui.R     # Shiny browser UI module
+    │   ├── browser_server.R # Shiny browser server module
+    │   └── zzz.R            # Package load/unload hooks
+    └── vignettes/
+        ├── concepts.Rmd     # Conceptual background
+        └── code-walkthrough.Rmd  # This file
+
+------------------------------------------------------------------------
+
+## Core Design Decisions
+
+### 1. Singleton Connection Pattern
+
+The package maintains a single connection stored in a private
+environment:
+
+``` r
+.db_env <- new.env(parent = emptyenv())
+```
+
+**Why?**
+
+- Prevents users accidentally creating multiple connections
+- Simplifies the API (no need to pass connection objects around)
+- Ensures cleanup happens properly
+
+All functions retrieve the connection via `.db_get_con()` rather than
+creating new ones.
+
+### 2. Mode Tracking (Hive vs DuckLake)
+
+When you connect, the package records which mode you’re in:
+
+``` r
+assign("mode", "hive", envir = .db_env)      # or "ducklake"
+```
+
+Functions then check this and give helpful errors if you call the wrong
+one:
+
+``` r
+if (curr_mode != "hive") {
+  stop("Connected in DuckLake mode. Use db_lake_read() instead...")
+}
+```
+
+### 3. Input Validation
+
+All user inputs are validated early with clear error messages:
+
+``` r
+.db_validate_name <- function(x, arg = "name") {
+  # Must be single non-empty string
+  # Only allows A-Z a-z 0-9 _ -
+  # Prevents SQL injection and path traversal
+}
+```
+
+This catches problems like `section = "../../../etc/passwd"` before they
+cause harm.
+
+### 4. Lazy Evaluation with DuckDB
+
+Read functions return **lazy** dplyr tables, not collected data:
+
+``` r
+dplyr::tbl(con, dplyr::sql(query))
+```
+
+**Why?**
+
+- Large datasets aren’t loaded into memory until needed
+- DuckDB can optimise the full query (filters, joins, aggregations)
+- Users call `collect()` when they’re ready to bring data into R
+
+------------------------------------------------------------------------
+
+## File-by-File Walkthrough
+
+------------------------------------------------------------------------
+
+## `R/db_connect.R` - Connection Management
+
+This file handles connecting to and disconnecting from the data lake.
+
+### Private Environment and Helpers
+
+``` r
+.db_env <- new.env(parent = emptyenv())
+```
+
+This creates an isolated environment that persists for the R session. We
+store:
+
+- `con` - the DuckDB connection object
+- `mode` - “hive” or “ducklake”
+- `data_path` - root path for parquet files
+- `catalog` - DuckLake catalog name (DuckLake mode only)
+- `catalog_type` - “duckdb”, “sqlite”, or “postgres” (DuckLake mode
+  only)
+- `metadata_path` - path to catalog file/connection string (DuckLake
+  mode only)
+
+``` r
+.db_get_con <- function() {
+  # Returns the connection if it exists and is valid, NULL otherwise
+  if (exists("con", envir = .db_env) && DBI::dbIsValid(.db_env$con)) {
+    return(.db_env$con)
+  }
+  NULL
+}
+```
+
+This is the safe way to get the connection - it checks validity, not
+just existence.
+
+``` r
+.db_get <- function(name, default = NULL) {
+  # Safe getter with default value
+  if (exists(name, envir = .db_env)) {
+    get(name, envir = .db_env)
+  } else {
+    default
+  }
+}
+```
+
+Used throughout the package to retrieve stored values.
+
+### Catalog Backend Helpers
+
+These internal functions handle the different catalog backend types:
+
+``` r
+.db_build_ducklake_dsn <- function(catalog_type, metadata_path) {
+  switch(catalog_type,
+    duckdb = paste0("ducklake:", metadata_path),
+    sqlite = paste0("ducklake:sqlite:", metadata_path),
+    postgres = paste0("ducklake:postgres:", metadata_path),
+    stop("Unknown catalog_type")
+  )
+}
+```
+
+This builds the correct DuckLake connection string based on the
+backend: - DuckDB: `ducklake:metadata.ducklake` - SQLite:
+`ducklake:sqlite:catalog.sqlite` - PostgreSQL:
+`ducklake:postgres:dbname=... host=...`
+
+``` r
+.db_load_catalog_extensions <- function(con, catalog_type) {
+  # Always need ducklake
+  try(DBI::dbExecute(con, "INSTALL ducklake"), silent = TRUE)
+  DBI::dbExecute(con, "LOAD ducklake")
+  
+  # Load backend-specific extension
+  if (catalog_type == "sqlite") {
+    try(DBI::dbExecute(con, "INSTALL sqlite"), silent = TRUE)
+    DBI::dbExecute(con, "LOAD sqlite")
+  } else if (catalog_type == "postgres") {
+    try(DBI::dbExecute(con, "INSTALL postgres"), silent = TRUE)
+    DBI::dbExecute(con, "LOAD postgres")
+  }
+}
+```
+
+DuckDB needs extra extensions loaded for SQLite and PostgreSQL backends.
+
+### `db_connect()` - Hive Mode
+
+``` r
+db_connect <- function(path = "//CSO-NAS/DataLake",
+                       db = ":memory:",
+                       threads = NULL,
+                       memory_limit = NULL,
+                       load_extensions = NULL) {
+  
+  # Return existing connection if valid
+  con <- .db_get_con()
+  if (!is.null(con)) return(con)
+  
+  # Create new DuckDB connection
+  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db)
+  
+  # Optional performance tuning
+  if (!is.null(threads)) {
+    DBI::dbExecute(con, sprintf("SET threads=%d", as.integer(threads)))
+  }
+  
+  # Store everything in .db_env
+  assign("con", con, envir = .db_env)
+  assign("data_path", path, envir = .db_env)
+  assign("mode", "hive", envir = .db_env)
+  
+  # Register cleanup for session end
+  reg.finalizer(.db_env, function(e) {
+    try(DBI::dbDisconnect(e$con, shutdown = TRUE), silent = TRUE)
+  }, onexit = TRUE)
+  
+  con
+}
+```
+
+**Key points:**
+
+- `db = ":memory:"` means DuckDB runs in-memory (fast, no disk file)
+- `load_extensions` allows loading things like `httpfs` for S3 access
+- `reg.finalizer` ensures cleanup even if user forgets to disconnect
+
+### `db_lake_connect()` - DuckLake Mode
+
+``` r
+db_lake_connect <- function(duckdb_db = ":memory:",
+                            catalog = "cso",
+                            catalog_type = c("duckdb", "sqlite", "postgres"),
+                            metadata_path = "metadata.ducklake",
+                            data_path = "//CSO-NAS/DataLake",
+                            snapshot_version = NULL,
+                            snapshot_time = NULL,
+                            ...) {
+  
+  catalog_type <- match.arg(catalog_type)
+  
+  # Create DuckDB connection
+  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = duckdb_db)
+  
+  # Load DuckLake and backend-specific extensions
+  .db_load_catalog_extensions(con, catalog_type)
+  
+  # Build the backend-specific connection string
+  ducklake_dsn <- .db_build_ducklake_dsn(catalog_type, metadata_path)
+  
+  # Build ATTACH statement with options
+  attach_opts <- c(glue::glue("DATA_PATH {.db_sql_quote(data_path)}"))
+  
+  if (!is.null(snapshot_version)) {
+    attach_opts <- c(attach_opts, glue::glue("SNAPSHOT_VERSION {as.integer(snapshot_version)}"))
+  }
+  
+  attach_sql <- glue::glue(
+    "ATTACH {.db_sql_quote(ducklake_dsn)} AS {catalog} ({paste(attach_opts, collapse = ', ')})"
+  )
+  
+  # Attach with helpful error messages
+  tryCatch({
+    DBI::dbExecute(con, attach_sql)
+  }, error = function(e) {
+    DBI::dbDisconnect(con, shutdown = TRUE)
+    hint <- switch(catalog_type,
+      sqlite = "Ensure the sqlite extension is available and the metadata file path is accessible.",
+      postgres = "Ensure PostgreSQL is running and the connection string is correct.",
+      duckdb = "Ensure the metadata file path is accessible."
+    )
+    stop("Failed to attach DuckLake catalog.\n", hint, "\n\nOriginal error: ", e$message)
+  })
+  
+  DBI::dbExecute(con, glue::glue("USE {catalog}"))
+  
+  # Store DuckLake-specific info including catalog_type
+  assign("mode", "ducklake", envir = .db_env)
+  assign("catalog", catalog, envir = .db_env)
+  assign("catalog_type", catalog_type, envir = .db_env)
+  ...
+}
+```
+
+**Key points:**
+
+- Supports three catalog backends (DuckDB, SQLite, PostgreSQL)
+- ATTACH statement connects the DuckLake catalog to the DuckDB session
+- Error messages include backend-specific troubleshooting hints
+
+------------------------------------------------------------------------
+
+## `R/db_write.R` - Writing Data
+
+### `db_hive_write()` - Partitioned Parquet
+
+``` r
+db_hive_write <- function(data, section, dataset,
+                          partition_by = NULL,
+                          mode = c("overwrite", "append", "ignore", "replace_partitions"),
+                          compression = NULL,
+                          filename_pattern = "data_{uuid}") {
+  
+  # Validate inputs
+  section <- .db_validate_name(section)
+  dataset <- .db_validate_name(dataset)
+  
+  # Mode-specific validation
+  if (mode == "append" && is.null(partition_by)) {
+    stop("mode = 'append' requires partition_by...")
+  }
+  
+  # Register data as temporary view
+  temp_name <- .db_temp_name()
+  duckdb::duckdb_register(con, temp_name, data)
+  on.exit(duckdb::duckdb_unregister(con, temp_name))
+  
+  # For replace_partitions, delete only affected folders
+  if (mode == "replace_partitions") {
+    part_vals <- unique(data[partition_by])
+    # Build paths like year=2024/month=01
+    # Delete existing folders for those partitions
+    fs::dir_delete(existing_partition_folders)
+  }
+  
+  # Build COPY statement
+  opts <- c("FORMAT PARQUET", "PARTITION_BY (...)")
+  sql <- glue::glue("COPY {temp_name} TO '{path}' ({opts})")
+  DBI::dbExecute(con, sql)
+}
+```
+
+**Key points:**
+
+- `duckdb_register()` makes R data.frames available as SQL tables
+  without copying
+- `replace_partitions` mode deletes only the partition folders being
+  updated
+- DuckDB’s `COPY ... PARTITION_BY` creates hive-style folders
+  automatically
+
+### `db_lake_write()` - DuckLake Tables
+
+``` r
+db_lake_write <- function(data, schema = "main", table,
+                          mode = c("overwrite", "append"),
+                          commit_author = NULL,
+                          commit_message = NULL) {
+  
+  # Register data temporarily
+  tmp <- .db_temp_name()
+  duckdb::duckdb_register(con, tmp, data)
+  
+  DBI::dbExecute(con, "BEGIN")
+  
+  # Set commit metadata if provided
+  if (!is.null(commit_author) || !is.null(commit_message)) {
+    DBI::dbExecute(con, glue::glue(
+      "CALL ducklake_set_commit_message({.db_sql_quote(catalog)}, {author}, {msg})"
+    ))
+  }
+  
+  # Write data
+  if (mode == "overwrite") {
+    sql <- glue::glue("CREATE OR REPLACE TABLE {qname} AS SELECT * FROM {tmp}")
+  } else {
+    sql <- glue::glue("INSERT INTO {qname} SELECT * FROM {tmp}")
+  }
+  
+  tryCatch({
+    DBI::dbExecute(con, sql)
+    DBI::dbExecute(con, "COMMIT")
+  }, error = function(e) {
+    DBI::dbExecute(con, "ROLLBACK")
+    stop(e$message)
+  })
+}
+```
+
+**Key points:**
+
+- Uses transactions (`BEGIN`/`COMMIT`) for atomicity
+- `ROLLBACK` on error ensures no partial changes
+- `ducklake_set_commit_message(catalog, author, message)` records
+  metadata in the snapshot
+
+------------------------------------------------------------------------
+
+## `R/upsert.R` - MERGE Operations
+
+### `db_upsert()` - Update + Insert
+
+``` r
+db_upsert <- function(data, schema = "main", table, by,
+                      strict = TRUE, update_cols = NULL,
+                      commit_author = NULL, commit_message = NULL) {
+  
+  # Validate key columns exist in both data and target
+  missing_keys <- setdiff(by, names(data))
+  if (length(missing_keys) > 0) stop(...)
+  
+  # Strict mode: reject duplicate keys in incoming data
+  if (strict) {
+    dup_check_sql <- glue::glue("
+      SELECT {by_sql}, COUNT(*) AS n
+      FROM {tmp}
+      GROUP BY {by_sql}
+      HAVING COUNT(*) > 1
+    ")
+    dups <- DBI::dbGetQuery(con, dup_check_sql)
+    if (nrow(dups) > 0) stop("Duplicate keys found...")
+  }
+  
+  # Build MERGE statement
+  on_sql <- paste(glue::glue("t.{by} = s.{by}"), collapse = " AND ")
+  
+  # UPDATE clause depends on update_cols
+  update_clause <- if (is.null(update_cols)) {
+    "WHEN MATCHED THEN UPDATE"  # DuckDB shorthand: update all
+  } else if (length(update_cols) == 0) {
+    ""  # Insert-only mode
+  } else {
+    glue::glue("WHEN MATCHED THEN UPDATE SET {update_sql}")
+  }
+  
+  merge_sql <- glue::glue("
+    MERGE INTO {qname} AS t
+    USING {tmp} AS s
+    ON ({on_sql})
+    {update_clause}
+    WHEN NOT MATCHED THEN INSERT ...
+  ")
+  
+  # Execute in transaction
+  DBI::dbExecute(con, "BEGIN")
+  DBI::dbExecute(con, merge_sql)
+  DBI::dbExecute(con, "COMMIT")
+}
+```
+
+**Key points:**
+
+- `MERGE INTO` is standard SQL for upsert operations
+- `strict = TRUE` prevents accidental duplicates (a common data quality
+  issue)
+- `update_cols = NULL` means update everything; `character(0)` means
+  insert-only
+- All wrapped in a transaction for safety
+
+------------------------------------------------------------------------
+
+## `R/docs.R` - Documentation & Data Dictionary
+
+### Metadata Storage
+
+Documentation metadata is stored differently in each mode:
+
+**Hive mode**: JSON sidecar files
+
+``` r
+.db_metadata_path <- function(section, dataset) {
+  file.path(base_path, section, dataset, "_metadata.json")
+}
+```
+
+**DuckLake mode**: Tables in a `_metadata` schema
+
+``` r
+.db_ensure_metadata_table <- function(con, catalog) {
+  DBI::dbExecute(con, "CREATE SCHEMA IF NOT EXISTS {catalog}._metadata")
+  DBI::dbExecute(con, "CREATE TABLE IF NOT EXISTS {catalog}._metadata.table_docs (...)")
+  DBI::dbExecute(con, "CREATE TABLE IF NOT EXISTS {catalog}._metadata.column_docs (...)")
+}
+```
+
+### `db_describe()` - Document a Dataset
+
+``` r
+db_describe <- function(section = NULL, dataset = NULL,
+                        schema = "main", table = NULL,
+                        description = NULL, owner = NULL, tags = NULL) {
+  
+  if (curr_mode == "hive") {
+    # Read existing metadata, update fields, write back
+    meta_path <- .db_metadata_path(section, dataset)
+    metadata <- .db_read_metadata(meta_path)
+    
+    if (!is.null(description)) metadata$description <- description
+    if (!is.null(owner)) metadata$owner <- owner
+    if (!is.null(tags)) metadata$tags <- as.character(tags)
+    
+    .db_write_metadata(metadata, meta_path)
+    
+  } else {
+    # DuckLake - upsert into _metadata.table_docs
+    .db_ensure_metadata_table(con, catalog)
+    
+    DBI::dbExecute(con, "DELETE FROM ... WHERE schema = ... AND table = ...")
+    DBI::dbExecute(con, "INSERT INTO ... VALUES (...)")
+  }
+}
+```
+
+### `db_dictionary()` - Generate Data Dictionary
+
+``` r
+db_dictionary <- function(section = NULL, schema = NULL, include_columns = TRUE) {
+  
+  if (curr_mode == "hive") {
+    # Iterate through sections and datasets
+    for (sec in db_list_sections()) {
+      for (ds in db_list_datasets(sec)) {
+        # Get metadata
+        meta <- db_get_docs(section = sec, dataset = ds)
+        
+        # Get columns from parquet schema
+        cols_info <- DBI::dbGetQuery(con, glue::glue(
+          "DESCRIBE SELECT * FROM read_parquet('{path}/**/*.parquet')"
+        ))
+        
+        # Combine into rows
+      }
+    }
+  } else {
+    # DuckLake - query information_schema and _metadata tables
+    tables <- DBI::dbGetQuery(con, "SELECT * FROM information_schema.tables ...")
+    
+    for (tbl in tables) {
+      meta <- db_get_docs(schema = ..., table = ...)
+      cols <- DBI::dbGetQuery(con, "SELECT * FROM information_schema.columns ...")
+    }
+  }
+  
+  do.call(rbind, rows)
+}
+```
+
+### `db_search()` - Find Datasets
+
+``` r
+db_search <- function(pattern, field = c("all", "name", "description", "owner", "tags")) {
+  # Get full dictionary (without columns for speed)
+  dict <- db_dictionary(include_columns = FALSE)
+  
+  # Filter by pattern match
+  matches <- switch(field,
+    all = grepl(pattern, dict$name) | grepl(pattern, dict$description) | ...,
+    name = grepl(pattern, dict$name),
+    description = grepl(pattern, dict$description),
+    ...
+  )
+  
+  dict[matches, ]
+}
+```
+
+------------------------------------------------------------------------
+
+## `R/preview.R` - Write Previews
+
+### `db_preview_hive_write()` - Preview Before Writing
+
+``` r
+db_preview_hive_write <- function(data, section, dataset,
+                                   partition_by = NULL,
+                                   mode = c("overwrite", "append", "ignore", "replace_partitions")) {
+  
+  preview <- list(
+    mode = mode,
+    target_exists = dir.exists(output_path),
+    incoming = list(
+      rows = nrow(data),
+      cols = ncol(data),
+      columns = names(data)
+    )
+  )
+  
+  # If target exists, compare schemas
+  if (preview$target_exists) {
+    existing_schema <- DBI::dbGetQuery(con, "DESCRIBE SELECT * FROM read_parquet(...)")
+    
+    preview$schema_changes <- list(
+      new_columns = setdiff(names(data), existing_schema$name),
+      removed_columns = setdiff(existing_schema$name, names(data)),
+      type_changes = ...
+    )
+  }
+  
+  # For partitioned writes, show impact
+  if (!is.null(partition_by)) {
+    part_vals <- unique(data[partition_by])
+    preview$partition_impact <- list(
+      partitions_in_data = nrow(part_vals),
+      existing_partitions_to_replace = ...
+    )
+  }
+  
+  .print_hive_preview(preview)
+  invisible(preview)
+}
+```
+
+**Key points:**
+
+- Gathers all relevant information without making any changes
+- Compares incoming schema with existing schema
+- For `replace_partitions`, shows which folders will be affected
+- Returns structured data for programmatic use, prints human-readable
+  summary
+
+### `db_preview_upsert()` - Preview Insert vs Update Counts
+
+``` r
+db_preview_upsert <- function(data, schema, table, by, update_cols = NULL) {
+  
+  # Register data temporarily
+  tmp <- .db_temp_name()
+  duckdb::duckdb_register(con, tmp, data)
+  
+  # Count matches (updates)
+  match_sql <- glue::glue("
+    SELECT COUNT(*) FROM {tmp} s
+    INNER JOIN {qname} t ON {join_on_keys}
+  ")
+  matches <- DBI::dbGetQuery(con, match_sql)$n
+  
+  # Check for duplicate keys
+  dup_sql <- glue::glue("
+    SELECT {key_cols}, COUNT(*) FROM {tmp}
+    GROUP BY {key_cols} HAVING COUNT(*) > 1
+  ")
+  dups <- DBI::dbGetQuery(con, dup_sql)
+  
+  preview$impact <- list(
+    inserts = nrow(data) - matches,
+    updates = matches,
+    duplicates_in_incoming = nrow(dups)
+  )
+  
+  .print_upsert_preview(preview)
+  invisible(preview)
+}
+```
+
+------------------------------------------------------------------------
+
+## `R/discovery.R` - Finding Data
+
+### Hive Discovery
+
+``` r
+db_list_sections <- function() {
+  base_path <- .db_get("data_path")
+  
+  # List directories (sections are top-level folders)
+  all_items <- list.dirs(base_path, full.names = FALSE, recursive = FALSE)
+  
+  # Filter out hidden folders
+  all_items[!grepl("^\\.", all_items)]
+}
+
+db_list_datasets <- function(section) {
+  section_path <- file.path(base_path, section)
+  all_items <- list.dirs(section_path, full.names = FALSE, recursive = FALSE)
+  
+  # Filter out partition folders (contain '=')
+  all_items[!grepl("=", all_items)]
+}
+```
+
+**Key points:**
+
+- Uses file system operations (`list.dirs`)
+- Filters out hidden folders (`.git`, etc.) and partition folders
+  (`year=2024`)
+
+### DuckLake Discovery
+
+``` r
+db_list_tables <- function(schema = "main") {
+  sql <- glue::glue("
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_catalog = {.db_sql_quote(catalog)}
+      AND table_schema  = {.db_sql_quote(schema)}
+      AND table_type    = 'BASE TABLE'
+  ")
+  DBI::dbGetQuery(con, sql)$table_name
+}
+```
+
+**Key points:**
+
+- Uses standard `information_schema` views
+- Filters by catalog to avoid confusion with other attached databases
+
+------------------------------------------------------------------------
+
+## `R/maintenance.R` - Admin Operations
+
+### `db_vacuum()` - Clean Up Old Snapshots
+
+``` r
+db_vacuum <- function(older_than = "30 days", dry_run = TRUE) {
+  # Get snapshots before
+  snapshots_before <- db_snapshots()
+  
+  if (dry_run) {
+    # Calculate what would be removed
+    # Show preview
+    return(invisible(to_remove))
+  }
+  
+  # Actually vacuum
+  DBI::dbExecute(con, glue::glue(
+    "CALL ducklake_vacuum({.db_sql_quote(catalog)}, INTERVAL '30 days')"
+  ))
+}
+```
+
+**Key points:**
+
+- `dry_run = TRUE` by default prevents accidental deletion
+- Shows clear before/after summary
+
+### `db_rollback()` - Restore Previous Version
+
+``` r
+db_rollback <- function(schema, table, version = NULL, timestamp = NULL) {
+  # Build time travel clause
+  at_clause <- glue::glue("AT (VERSION => {version})")
+  
+  # Rollback = create new version with old data
+  rollback_sql <- glue::glue(
+    "CREATE OR REPLACE TABLE {qname} AS SELECT * FROM {qname} {at_clause}"
+  )
+  
+  DBI::dbExecute(con, rollback_sql)
+}
+```
+
+**Key points:**
+
+- Rollback creates a NEW snapshot with the old data (non-destructive)
+- You can always “roll forward” by rolling back to a later version
+
+### `db_diff()` - Compare Versions
+
+``` r
+db_diff <- function(schema, table, from_version, to_version, key_cols = NULL) {
+  # ADDED: rows in 'to' but not in 'from'
+  added_sql <- glue::glue("SELECT * FROM {to_ref} EXCEPT SELECT * FROM {from_ref}")
+  
+  # REMOVED: rows in 'from' but not in 'to'
+  removed_sql <- glue::glue("SELECT * FROM {from_ref} EXCEPT SELECT * FROM {to_ref}")
+  
+  result <- list(
+    added = DBI::dbGetQuery(con, added_sql),
+    removed = DBI::dbGetQuery(con, removed_sql)
+  )
+  
+  # If key_cols provided, find modified rows (same key, different values)
+  if (!is.null(key_cols)) {
+    # Modified = key appears in both added and removed
+    modified_sql <- glue::glue("
+      SELECT new_tbl.* 
+      FROM ({added_sql}) AS new_tbl
+      INNER JOIN ({removed_sql}) AS old_tbl
+      ON {join_on_keys}
+    ")
+    result$modified <- DBI::dbGetQuery(con, modified_sql)
+  }
+  
+  result
+}
+```
+
+**Key points:**
+
+- Uses SQL `EXCEPT` for set difference operations
+- With `key_cols`, can distinguish “modified” from “added/removed”
+
+------------------------------------------------------------------------
+
+## `R/zzz.R` - Package Hooks
+
+``` r
+# Null coalesce operator used throughout
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
+
+.onAttach <- function(libname, pkgname) {
+  packageStartupMessage(
+    "csolake ", utils::packageVersion("csolake"), "\n",
+    "Use db_connect() for hive mode or db_lake_connect() for DuckLake mode."
+  )
+}
+
+.onUnload <- function(libpath) {
+  # Clean up connection when package unloads
+  con <- .db_get_con()
+  if (!is.null(con)) {
+    try(DBI::dbDisconnect(con, shutdown = TRUE), silent = TRUE)
+  }
+}
+```
+
+**Key points:**
+
+- `.onAttach` runs when the package is loaded (shows helpful message)
+- `.onUnload` ensures cleanup if the package is unloaded
+- `%||%` handles both `NULL` and zero-length values
+
+------------------------------------------------------------------------
+
+## `R/browser.R`, `R/browser_ui.R`, `R/browser_server.R` - Interactive Browser
+
+These files implement a Shiny gadget for interactively browsing the data
+lake.
+
+### Architecture
+
+The browser uses the **Shiny module** pattern, which allows it to be: 1.
+Used standalone via
+[`db_browser()`](https://cathalbyrnegit.github.io/csolake/reference/db_browser.md)
+2. Embedded in other Shiny apps via
+[`db_browser_ui()`](https://cathalbyrnegit.github.io/csolake/reference/db_browser_ui.md) +
+[`db_browser_server()`](https://cathalbyrnegit.github.io/csolake/reference/db_browser_server.md)
+
+``` r
+# Standalone usage
+db_browser()
+
+# Embedded in another app
+ui <- fluidPage(
+  db_browser_ui("my_browser")
+)
+server <- function(input, output, session) {
+  db_browser_server("my_browser")
+}
+```
+
+### `browser.R` - Launcher
+
+``` r
+db_browser <- function(height = "500px", viewer = c("dialog", "browser", "pane")) {
+  # Check packages are available
+  .db_assert_browser_packages()
+  
+  # Build app
+  ui <- db_browser_app_ui(height = height)
+  server <- function(input, output, session) {
+    db_browser_server(id = "db_browser", height = height)
+  }
+  app <- shiny::shinyApp(ui = ui, server = server)
+  
+  # Run as gadget
+  shiny::runGadget(app, viewer = viewer_func, stopOnCancel = TRUE)
+}
+```
+
+### `browser_ui.R` - Module UI
+
+The UI is built with `bslib` for modern Bootstrap 5 styling:
+
+``` r
+db_browser_ui <- function(id, height = "500px") {
+  ns <- shiny::NS(id)  # Namespace for module
+  
+  # Sidebar with tree view
+  sidebar <- bslib::sidebar(
+    shiny::uiOutput(ns("tree_view")),
+    shiny::actionButton(ns("refresh_tree"), "Refresh")
+  )
+  
+  # Main content with tabs
+  main_content <- bslib::navset_card_tab(
+    bslib::nav_panel("Preview", ...),
+    bslib::nav_panel("Metadata", ...),
+    bslib::nav_panel("Search", ...),
+    bslib::nav_panel("Dictionary", ...)
+  )
+  
+  bslib::page_sidebar(sidebar = sidebar, main_content)
+}
+```
+
+**Key points:**
+
+- `NS(id)` creates namespaced IDs so multiple instances don’t conflict
+- `bslib` provides modern Bootstrap 5 components
+- Tree view is rendered dynamically based on hive vs DuckLake mode
+
+### `browser_server.R` - Module Server
+
+``` r
+db_browser_server <- function(id, height = "500px") {
+  shiny::moduleServer(id, function(input, output, session) {
+    
+    # Reactive values for selection state
+    rv <- shiny::reactiveValues(
+      selected_section = NULL,
+      selected_dataset = NULL
+    )
+    
+    # Tree view - renders differently for hive vs DuckLake
+    output$tree_view <- shiny::renderUI({
+      if (is_hive) .render_hive_tree(ns, rv)
+      else .render_ducklake_tree(ns, rv)
+    })
+    
+    # Preview - loads data on button click
+    preview_data <- shiny::eventReactive(input$load_preview, {
+      db_hive_read(rv$selected_section, rv$selected_dataset) |>
+        head(input$preview_rows) |>
+        collect()
+    })
+    
+    output$preview_table <- DT::renderDataTable({
+      DT::datatable(preview_data(), filter = "top")
+    })
+    
+    # Search
+    search_results <- shiny::eventReactive(input$do_search, {
+      db_search(input$search_pattern, field = input$search_field)
+    })
+    
+    # Dictionary with download
+    output$download_dict <- shiny::downloadHandler(
+      filename = "data_dictionary.csv",
+      content = function(file) {
+        write.csv(db_dictionary(), file)
+      }
+    )
+  })
+}
+```
+
+**Key points:**
+
+- `moduleServer()` creates the namespaced server logic
+- `reactiveValues` tracks UI state (selected table, etc.)
+- `eventReactive` triggers expensive operations only on button click
+- [`DT::datatable`](https://rdrr.io/pkg/DT/man/datatable.html) provides
+  interactive tables with filtering
+
+------------------------------------------------------------------------
+
+## Security Considerations
+
+### SQL Injection Prevention
+
+All user inputs that go into SQL are either:
+
+1.  **Validated** with `.db_validate_name()` (only allows `A-Za-z0-9_-`)
+2.  **Quoted** with `.db_sql_quote()` (escapes single quotes)
+
+``` r
+# This is safe:
+section <- .db_validate_name(section)  # Rejects "../../../etc"
+path <- .db_sql_quote(glob_path)       # Escapes quotes properly
+```
+
+### Path Traversal Prevention
+
+`.db_validate_name()` rejects any input containing: - Path separators
+(`/`, `\`) - Parent directory references (`..`) - Special characters
+
+This prevents attacks like:
+
+``` r
+db_hive_read("../../../etc", "passwd")  # Rejected!
+```
+
+------------------------------------------------------------------------
+
+## Testing Your Understanding
+
+Try answering these questions:
+
+1.  Why do we use `.db_get_con()` instead of accessing `.db_env$con`
+    directly?
+2.  What happens if
+    [`db_lake_write()`](https://cathalbyrnegit.github.io/csolake/reference/db_lake_write.md)
+    fails halfway through?
+3.  Why does
+    [`db_hive_read()`](https://cathalbyrnegit.github.io/csolake/reference/db_hive_read.md)
+    return a lazy table instead of collected data?
+4.  How does `replace_partitions` mode know which folders to delete?
+5.  What’s the difference between `update_cols = NULL` and
+    `update_cols = character(0)` in
+    [`db_upsert()`](https://cathalbyrnegit.github.io/csolake/reference/db_upsert.md)?
+6.  Why would you choose SQLite over DuckDB as a catalog backend?
+7.  How does
+    [`db_preview_upsert()`](https://cathalbyrnegit.github.io/csolake/reference/db_preview_upsert.md)
+    know how many rows will be updated vs inserted?
+8.  Where is documentation metadata stored in hive mode vs DuckLake
+    mode?
+
+------------------------------------------------------------------------
+
+## Contributing to the Package
+
+When adding new functions:
+
+1.  **Always validate inputs** with `.db_validate_name()` or custom
+    validation
+2.  **Check connection and mode** at the start of every function
+3.  **Use `.db_get()` and `.db_get_con()`** for accessing stored state
+4.  **Return invisibly** for side-effect functions, visibly for queries
+5.  **Add roxygen documentation** with `@param`, `@return`, `@examples`,
+    `@export`
+6.  **Update NAMESPACE** if adding new exports
+7.  **Add tests** in `tests/testthat/` for new functionality
+
+Run `devtools::document()` after adding roxygen comments to regenerate
+NAMESPACE and help files.
