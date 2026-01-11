@@ -290,36 +290,105 @@ db_table_exists <- function(schema = "main", table) {
 
 
 #' Create a new schema in DuckLake
-#' 
+#'
+#' @description Creates a new schema in the DuckLake catalog. In DuckLake 0.2+,
+#'   schemas can have custom data paths, enabling folder-based access control.
 #' @param schema Schema name to create
+#' @param path Optional data path for this schema. Files for tables in this
+#'   schema will be stored under this path. Use this to enable folder-based
+#'   access control (e.g., different teams have access to different paths).
 #' @return Invisibly returns the schema name
 #' @examples
 #' \dontrun{
 #' db_lake_connect()
-#' db_create_schema("trade")
+#'
+#' # Simple schema (uses default data path)
+#' db_create_schema("reference")
+#'
+#' # Schema with custom path for access control
+#' db_create_schema("trade", path = "//CSO-NAS/DataLake/trade/")
+#' db_create_schema("labour", path = "//CSO-NAS/DataLake/labour/")
+#'
+#' # Now folder ACLs on //CSO-NAS/DataLake/trade/ control access to trade schema
 #' }
 #' @export
-db_create_schema <- function(schema) {
+db_create_schema <- function(schema, path = NULL) {
   schema <- .db_validate_name(schema, "schema")
-  
+
   con <- .db_get_con()
   if (is.null(con)) {
     stop("Not connected. Use db_lake_connect() first.", call. = FALSE)
   }
-  
+
   curr_mode <- .db_get("mode")
   if (!is.null(curr_mode) && curr_mode != "ducklake") {
     stop("Connected in hive mode. Schemas are only available for DuckLake.", call. = FALSE)
   }
-  
+
   catalog <- .db_get("catalog")
   if (is.null(catalog)) {
     stop("No DuckLake catalog configured. Use db_lake_connect() first.", call. = FALSE)
   }
-  
-  sql <- glue::glue("CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
+
+  if (!is.null(path)) {
+    # DuckLake 0.2+ path-based schema for access control
+    sql <- glue::glue("CREATE SCHEMA IF NOT EXISTS {catalog}.{schema} WITH (path = '{path}')")
+  } else {
+    sql <- glue::glue("CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
+  }
   DBI::dbExecute(con, sql)
-  
-  message("Schema created: ", catalog, ".", schema)
+
+  if (!is.null(path)) {
+    message("Schema created: ", catalog, ".", schema, " (path: ", path, ")")
+  } else {
+    message("Schema created: ", catalog, ".", schema)
+  }
   invisible(schema)
+}
+
+
+#' Get the data path for a schema
+#'
+#' @description Returns the data path configured for a DuckLake schema.
+#'   Returns NULL if the schema uses the default catalog data path.
+#' @param schema Schema name
+#' @return The path string, or NULL if using default
+#' @examples
+#' \dontrun{
+#' db_lake_connect()
+#' db_create_schema("trade", path = "//CSO-NAS/trade/")
+#' db_get_schema_path("trade")
+#' #> "//CSO-NAS/trade/"
+#' }
+#' @export
+db_get_schema_path <- function(schema) {
+  schema <- .db_validate_name(schema, "schema")
+
+  con <- .db_get_con()
+  if (is.null(con)) {
+    stop("Not connected. Use db_lake_connect() first.", call. = FALSE)
+  }
+
+  curr_mode <- .db_get("mode")
+  if (!is.null(curr_mode) && curr_mode != "ducklake") {
+    stop("Connected in hive mode. Schemas are only available for DuckLake.", call. = FALSE)
+  }
+
+  catalog <- .db_get("catalog")
+
+  # Query the DuckLake metadata for schema path
+  result <- tryCatch({
+    DBI::dbGetQuery(con, glue::glue("
+      SELECT path FROM {catalog}._ducklake_metadata.ducklake_schema
+      WHERE schema_name = '{schema}'
+    "))
+  }, error = function(e) {
+    # Schema may not exist or metadata table may differ
+    data.frame(path = character(0))
+  })
+
+  if (nrow(result) == 0 || is.na(result$path[1])) {
+    return(NULL)
+  }
+  result$path[1]
 }
