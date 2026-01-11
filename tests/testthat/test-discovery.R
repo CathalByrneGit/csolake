@@ -658,7 +658,6 @@ test_that("db_create_schema returns schema name invisibly", {
 
 test_that("db_create_schema with path creates schema with custom data path", {
   skip_if_not(ducklake_available(), "DuckLake extension not available")
-  skip("DuckLake 0.2+ with path support not available in test environment")
   clean_db_env()
 
   temp_dir <- tempfile(pattern = "path_schema_test_")
