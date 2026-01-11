@@ -188,6 +188,46 @@ tags = c("reference", "lookup", "countries")
 cat("✓ Documentation added\n")
 
 # =============================================================================
+# Publish datasets to Public Catalog
+# =============================================================================
+# Only data owners (with write access to the dataset folder) can publish.
+# Published metadata is copied to _catalog/ for organisation-wide discovery.
+
+cat("\nPublishing to public catalog...\n")
+
+# Publish selected datasets (using public=TRUE in db_describe)
+db_describe(
+  section = "Trade",
+  dataset = "Imports",
+  public = TRUE  # Publishes to _catalog/Trade/Imports.json
+)
+cat("✓ Trade/Imports published\n")
+
+db_describe(
+  section = "Trade",
+  dataset = "Exports",
+  public = TRUE
+)
+cat("✓ Trade/Exports published\n")
+
+db_describe(
+  section = "Reference",
+  dataset = "Countries",
+  public = TRUE
+)
+cat("✓ Reference/Countries published\n")
+
+# Labour datasets remain private (internal use only)
+cat("  Labour/Employment - private (internal only)\n")
+cat("  Labour/Earnings - private (internal only)\n")
+cat("  Health/Hospitals - private (internal only)\n")
+
+# Show public catalog contents
+cat("\nPublic Catalog contents:\n")
+public_datasets <- db_list_public()
+print(public_datasets[, c("section", "dataset", "description")])
+
+# =============================================================================
 # Show what we created
 # =============================================================================
 
@@ -214,6 +254,7 @@ db_status()
 
 cat("\n")
 cat("Launching browser...\n")
+cat("Try the 'Public Catalog' tab to see published datasets!\n")
 cat("(Close the browser window to return to R)\n\n")
 
 db_browser()
