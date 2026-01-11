@@ -404,25 +404,25 @@ systems needed.
 
 ### Public Catalog
 
-| Function            | Mode | Description                                  |
-|---------------------|------|----------------------------------------------|
-| `db_set_public()`   | Both | Make metadata discoverable organisation-wide |
-| `db_set_private()`  | Both | Remove from public catalog                   |
-| `db_is_public()`    | Both | Check if in public catalog                   |
-| `db_list_public()`  | Both | List all discoverable datasets/tables        |
-| `db_sync_catalog()` | Both | Sync public catalog with source metadata     |
+| Function                                                                                      | Mode | Description                                  |
+|-----------------------------------------------------------------------------------------------|------|----------------------------------------------|
+| [`db_set_public()`](https://cathalbyrnegit.github.io/datapond/reference/db_set_public.md)     | Both | Make metadata discoverable organisation-wide |
+| [`db_set_private()`](https://cathalbyrnegit.github.io/datapond/reference/db_set_private.md)   | Both | Remove from public catalog                   |
+| [`db_is_public()`](https://cathalbyrnegit.github.io/datapond/reference/db_is_public.md)       | Both | Check if in public catalog                   |
+| [`db_list_public()`](https://cathalbyrnegit.github.io/datapond/reference/db_list_public.md)   | Both | List all discoverable datasets/tables        |
+| [`db_sync_catalog()`](https://cathalbyrnegit.github.io/datapond/reference/db_sync_catalog.md) | Both | Sync public catalog with source metadata     |
 
 ### Multi-Catalog (DuckLake)
 
-| Function                        | Description                           |
-|---------------------------------|---------------------------------------|
-| `db_setup_master()`             | Create master discovery catalog       |
-| `db_register_section()`         | Register a section in master catalog  |
-| `db_unregister_section()`       | Remove section from master catalog    |
-| `db_list_registered_sections()` | List all registered sections          |
-| `db_lake_connect_section()`     | Connect to section via master catalog |
-| `db_current_section()`          | Get current section name              |
-| `db_switch_section()`           | Switch to a different section         |
+| Function                                                                                                              | Description                           |
+|-----------------------------------------------------------------------------------------------------------------------|---------------------------------------|
+| [`db_setup_master()`](https://cathalbyrnegit.github.io/datapond/reference/db_setup_master.md)                         | Create master discovery catalog       |
+| [`db_register_section()`](https://cathalbyrnegit.github.io/datapond/reference/db_register_section.md)                 | Register a section in master catalog  |
+| [`db_unregister_section()`](https://cathalbyrnegit.github.io/datapond/reference/db_unregister_section.md)             | Remove section from master catalog    |
+| [`db_list_registered_sections()`](https://cathalbyrnegit.github.io/datapond/reference/db_list_registered_sections.md) | List all registered sections          |
+| [`db_lake_connect_section()`](https://cathalbyrnegit.github.io/datapond/reference/db_lake_connect_section.md)         | Connect to section via master catalog |
+| [`db_current_section()`](https://cathalbyrnegit.github.io/datapond/reference/db_current_section.md)                   | Get current section name              |
+| [`db_switch_section()`](https://cathalbyrnegit.github.io/datapond/reference/db_switch_section.md)                     | Switch to a different section         |
 
 ### Metadata & Maintenance
 

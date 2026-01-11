@@ -695,14 +695,14 @@ only.</p>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Or use the convenience function</span></span>
-<span><span class="fu">db_set_public</span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span></code></pre></div>
+<span><span class="fu"><a href="../reference/db_set_public.html">db_set_public</a></span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
 <h3 id="discovering-data">Discovering Data<a class="anchor" aria-label="anchor" href="#discovering-data"></a>
 </h3>
 <div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Anyone can see what datasets exist (even without data access)</span></span>
-<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/db_list_public.html">db_list_public</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt;   section dataset            description        owner</span></span>
 <span><span class="co">#&gt; 1   Trade Imports Monthly import values  Trade Section</span></span>
 <span><span class="co">#&gt; 2  Labour Employment    Employment stats Labour Section</span></span>
@@ -764,17 +764,17 @@ organisation-wide visibility.</p>
 </h3>
 <div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Create master catalog</span></span>
-<span><span class="fu">db_setup_master</span><span class="op">(</span><span class="st">"//CSO-NAS/DataLake/_master/discovery.sqlite"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/db_setup_master.html">db_setup_master</a></span><span class="op">(</span><span class="st">"//CSO-NAS/DataLake/_master/discovery.sqlite"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Register each section</span></span>
-<span><span class="fu">db_register_section</span><span class="op">(</span></span>
+<span><span class="fu"><a href="../reference/db_register_section.html">db_register_section</a></span><span class="op">(</span></span>
 <span>  section <span class="op">=</span> <span class="st">"trade"</span>,</span>
 <span>  catalog_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/catalog.sqlite"</span>,</span>
 <span>  data_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/data"</span>,</span>
 <span>  owner <span class="op">=</span> <span class="st">"Trade Team"</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="fu">db_register_section</span><span class="op">(</span></span>
+<span><span class="fu"><a href="../reference/db_register_section.html">db_register_section</a></span><span class="op">(</span></span>
 <span>  section <span class="op">=</span> <span class="st">"labour"</span>,</span>
 <span>  catalog_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/labour/catalog.sqlite"</span>,</span>
 <span>  data_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/labour/data"</span>,</span>
@@ -786,7 +786,7 @@ organisation-wide visibility.</p>
 </h3>
 <div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Connect to a section (looks up paths from master)</span></span>
-<span><span class="fu">db_lake_connect_section</span><span class="op">(</span><span class="st">"trade"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/db_lake_connect_section.html">db_lake_connect_section</a></span><span class="op">(</span><span class="st">"trade"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Work with data</span></span>
 <span><span class="va">imports</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/db_lake_read.html">db_lake_read</a></span><span class="op">(</span>table <span class="op">=</span> <span class="st">"imports"</span><span class="op">)</span></span>
@@ -799,13 +799,13 @@ organisation-wide visibility.</p>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Discover across all sections</span></span>
-<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="fu"><a href="../reference/db_list_public.html">db_list_public</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="co">#&gt;   section schema    table           description</span></span>
 <span><span class="co">#&gt; 1   trade   main  imports Monthly import stats</span></span>
 <span><span class="co">#&gt; 2  labour   main employment    Employment data</span></span>
 <span></span>
 <span><span class="co"># Switch to another section</span></span>
-<span><span class="fu">db_switch_section</span><span class="op">(</span><span class="st">"labour"</span><span class="op">)</span></span></code></pre></div>
+<span><span class="fu"><a href="../reference/db_switch_section.html">db_switch_section</a></span><span class="op">(</span><span class="st">"labour"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
 <h3 id="unified-api">Unified API<a class="anchor" aria-label="anchor" href="#unified-api"></a>
@@ -830,18 +830,18 @@ organisation-wide visibility.</p>
 <td>Syncs to master SQLite</td>
 </tr>
 <tr class="even">
-<td><code>db_set_public()</code></td>
+<td><code><a href="../reference/db_set_public.html">db_set_public()</a></code></td>
 <td>Same</td>
 <td>Same</td>
 </tr>
 <tr class="odd">
-<td><code>db_list_public()</code></td>
+<td><code><a href="../reference/db_list_public.html">db_list_public()</a></code></td>
 <td>Lists <code>_catalog/</code>
 </td>
 <td>Queries master</td>
 </tr>
 <tr class="even">
-<td><code>db_sync_catalog()</code></td>
+<td><code><a href="../reference/db_sync_catalog.html">db_sync_catalog()</a></code></td>
 <td>Syncs JSON files</td>
 <td>Syncs master entries</td>
 </tr>

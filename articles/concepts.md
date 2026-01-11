@@ -675,12 +675,12 @@ db_switch_section("labour")
 
 The same functions work in both modes:
 
-| Function                   | Hive Mode             | DuckLake Mode          |
-|----------------------------|-----------------------|------------------------|
-| `db_describe(public=TRUE)` | Copies to `_catalog/` | Syncs to master SQLite |
-| `db_set_public()`          | Same                  | Same                   |
-| `db_list_public()`         | Lists `_catalog/`     | Queries master         |
-| `db_sync_catalog()`        | Syncs JSON files      | Syncs master entries   |
+| Function                                                                                      | Hive Mode             | DuckLake Mode          |
+|-----------------------------------------------------------------------------------------------|-----------------------|------------------------|
+| `db_describe(public=TRUE)`                                                                    | Copies to `_catalog/` | Syncs to master SQLite |
+| [`db_set_public()`](https://cathalbyrnegit.github.io/datapond/reference/db_set_public.md)     | Same                  | Same                   |
+| [`db_list_public()`](https://cathalbyrnegit.github.io/datapond/reference/db_list_public.md)   | Lists `_catalog/`     | Queries master         |
+| [`db_sync_catalog()`](https://cathalbyrnegit.github.io/datapond/reference/db_sync_catalog.md) | Syncs JSON files      | Syncs master entries   |
 
 ------------------------------------------------------------------------
 

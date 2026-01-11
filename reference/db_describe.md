@@ -3,6 +3,10 @@
 Add documentation metadata to a dataset (hive mode) or table (DuckLake
 mode). Metadata includes description, owner, and tags.
 
+In hive mode, you can set `public = TRUE` to publish the metadata to a
+shared catalog folder, making it discoverable organisation-wide without
+granting access to the underlying data.
+
 ## Usage
 
 ``` r
@@ -13,7 +17,8 @@ db_describe(
   table = NULL,
   description = NULL,
   owner = NULL,
-  tags = NULL
+  tags = NULL,
+  public = NULL
 )
 ```
 
@@ -47,6 +52,12 @@ db_describe(
 
   Character vector of tags for categorization
 
+- public:
+
+  Logical. If TRUE, publish metadata to the shared catalog folder. If
+  FALSE, remove from catalog. If NULL (default), keep current public
+  status and auto-sync if already public. (Hive mode only)
+
 ## Value
 
 Invisibly returns the metadata list
@@ -62,7 +73,8 @@ db_describe(
   dataset = "Imports",
   description = "Monthly import values by country and commodity code",
   owner = "Trade Section",
-  tags = c("trade", "monthly", "official")
+  tags = c("trade", "monthly", "official"),
+  public = TRUE
 )
 
 # DuckLake mode

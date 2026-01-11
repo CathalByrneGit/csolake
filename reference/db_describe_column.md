@@ -2,6 +2,10 @@
 
 Add documentation to a specific column in a dataset or table.
 
+In hive mode, you can set `public = TRUE` to include the column
+documentation in the public catalog. The dataset must already be public
+(use `db_describe(public = TRUE)` first).
+
 ## Usage
 
 ``` r
@@ -13,7 +17,8 @@ db_describe_column(
   column,
   description = NULL,
   units = NULL,
-  notes = NULL
+  notes = NULL,
+  public = NULL
 )
 ```
 
@@ -51,6 +56,12 @@ db_describe_column(
 
   Additional notes (optional)
 
+- public:
+
+  Logical. If TRUE, sync column docs to public catalog (requires dataset
+  to already be public). If NULL (default), auto-sync if dataset is
+  already public. (Hive mode only)
+
 ## Value
 
 Invisibly returns the column metadata
@@ -65,7 +76,8 @@ db_describe_column(
   dataset = "Imports",
   column = "value",
   description = "Import value in thousands",
-  units = "EUR (thousands)"
+  units = "EUR (thousands)",
+  public = TRUE
 )
 } # }
 ```
