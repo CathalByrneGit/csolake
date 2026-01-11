@@ -655,13 +655,209 @@ the Parquet data files still use file system permissions.</p>
 </div>
 </div>
 <div class="section level2">
+<h2 id="public-catalog-organisation-wide-discovery">Public Catalog: Organisation-wide Discovery<a class="anchor" aria-label="anchor" href="#public-catalog-organisation-wide-discovery"></a>
+</h2>
+<p>A common challenge: <strong>How do people discover what data exists
+without having access to all of it?</strong></p>
+<p>In Hive mode, if you can’t access the Trade folder, you can’t see
+what datasets Trade has. <code>datapond</code> solves this with a
+<strong>public catalog</strong> - a shared location for metadata
+only.</p>
+<div class="section level3">
+<h3 id="how-it-works">How It Works<a class="anchor" aria-label="anchor" href="#how-it-works"></a>
+</h3>
+<pre><code>//CSO-NAS/DataLake/
+├── _catalog/             ← Everyone can read this folder
+│   ├── Trade/
+│   │   ├── Imports.json  ← Metadata only (description, owner, columns)
+│   │   └── Exports.json
+│   └── Labour/
+│       └── Employment.json
+├── Trade/                ← Only Trade section can access
+│   └── Imports/
+│       ├── _metadata.json ← Source metadata
+│       └── year=2024/
+│           └── data.parquet
+└── Labour/               ← Only Labour section can access
+    └── Employment/</code></pre>
+</div>
+<div class="section level3">
+<h3 id="publishing-to-the-public-catalog">Publishing to the Public Catalog<a class="anchor" aria-label="anchor" href="#publishing-to-the-public-catalog"></a>
+</h3>
+<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Make a dataset discoverable</span></span>
+<span><span class="fu"><a href="../reference/db_describe.html">db_describe</a></span><span class="op">(</span></span>
+<span>  section <span class="op">=</span> <span class="st">"Trade"</span>,</span>
+<span>  dataset <span class="op">=</span> <span class="st">"Imports"</span>,</span>
+<span>  description <span class="op">=</span> <span class="st">"Monthly import values by country"</span>,</span>
+<span>  owner <span class="op">=</span> <span class="st">"Trade Section"</span>,</span>
+<span>  public <span class="op">=</span> <span class="cn">TRUE</span>  <span class="co"># Copies metadata to _catalog/Trade/Imports.json</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Or use the convenience function</span></span>
+<span><span class="fu">db_set_public</span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="discovering-data">Discovering Data<a class="anchor" aria-label="anchor" href="#discovering-data"></a>
+</h3>
+<div class="sourceCode" id="cb26"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Anyone can see what datasets exist (even without data access)</span></span>
+<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co">#&gt;   section dataset            description        owner</span></span>
+<span><span class="co">#&gt; 1   Trade Imports Monthly import values  Trade Section</span></span>
+<span><span class="co">#&gt; 2  Labour Employment    Employment stats Labour Section</span></span>
+<span></span>
+<span><span class="co"># Find datasets by keyword</span></span>
+<span><span class="fu"><a href="../reference/db_search.html">db_search</a></span><span class="op">(</span><span class="st">"monthly"</span>, field <span class="op">=</span> <span class="st">"description"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="security-model">Security Model<a class="anchor" aria-label="anchor" href="#security-model"></a>
+</h3>
+<table class="table">
+<thead><tr class="header">
+<th>Location</th>
+<th>Contains</th>
+<th>Who Can Access</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>_catalog/</code></td>
+<td>Metadata only (JSON)</td>
+<td>Everyone (read)</td>
+</tr>
+<tr class="even">
+<td><code>Trade/</code></td>
+<td>Actual data (Parquet)</td>
+<td>Trade section only</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The data stays secure</strong> - the public catalog only
+contains descriptions, not the actual data values.</p>
+<hr>
+</div>
+</div>
+<div class="section level2">
+<h2 id="multi-catalog-ducklake">Multi-Catalog DuckLake<a class="anchor" aria-label="anchor" href="#multi-catalog-ducklake"></a>
+</h2>
+<p>For larger organisations, each section may have its own DuckLake
+catalog. A <strong>master discovery catalog</strong> provides
+organisation-wide visibility.</p>
+<div class="section level3">
+<h3 id="architecture">Architecture<a class="anchor" aria-label="anchor" href="#architecture"></a>
+</h3>
+<pre><code>//CSO-NAS/DataLake/
+├── _master/
+│   └── discovery.sqlite     ← Master catalog (everyone reads)
+├── trade/
+│   ├── catalog.sqlite       ← Trade's DuckLake catalog
+│   └── data/                ← Trade's Parquet files
+├── labour/
+│   ├── catalog.sqlite       ← Labour's DuckLake catalog
+│   └── data/
+└── shared/
+    ├── catalog.sqlite
+    └── data/</code></pre>
+</div>
+<div class="section level3">
+<h3 id="setting-up-admin">Setting Up (Admin)<a class="anchor" aria-label="anchor" href="#setting-up-admin"></a>
+</h3>
+<div class="sourceCode" id="cb28"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Create master catalog</span></span>
+<span><span class="fu">db_setup_master</span><span class="op">(</span><span class="st">"//CSO-NAS/DataLake/_master/discovery.sqlite"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Register each section</span></span>
+<span><span class="fu">db_register_section</span><span class="op">(</span></span>
+<span>  section <span class="op">=</span> <span class="st">"trade"</span>,</span>
+<span>  catalog_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/catalog.sqlite"</span>,</span>
+<span>  data_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/data"</span>,</span>
+<span>  owner <span class="op">=</span> <span class="st">"Trade Team"</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu">db_register_section</span><span class="op">(</span></span>
+<span>  section <span class="op">=</span> <span class="st">"labour"</span>,</span>
+<span>  catalog_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/labour/catalog.sqlite"</span>,</span>
+<span>  data_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/labour/data"</span>,</span>
+<span>  owner <span class="op">=</span> <span class="st">"Labour Team"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="using-sections-user">Using Sections (User)<a class="anchor" aria-label="anchor" href="#using-sections-user"></a>
+</h3>
+<div class="sourceCode" id="cb29"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Connect to a section (looks up paths from master)</span></span>
+<span><span class="fu">db_lake_connect_section</span><span class="op">(</span><span class="st">"trade"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Work with data</span></span>
+<span><span class="va">imports</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/db_lake_read.html">db_lake_read</a></span><span class="op">(</span>table <span class="op">=</span> <span class="st">"imports"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Document and make discoverable (same API!)</span></span>
+<span><span class="fu"><a href="../reference/db_describe.html">db_describe</a></span><span class="op">(</span></span>
+<span>  table <span class="op">=</span> <span class="st">"imports"</span>,</span>
+<span>  description <span class="op">=</span> <span class="st">"Monthly import statistics"</span>,</span>
+<span>  public <span class="op">=</span> <span class="cn">TRUE</span>  <span class="co"># Syncs to master catalog</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Discover across all sections</span></span>
+<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co">#&gt;   section schema    table           description</span></span>
+<span><span class="co">#&gt; 1   trade   main  imports Monthly import stats</span></span>
+<span><span class="co">#&gt; 2  labour   main employment    Employment data</span></span>
+<span></span>
+<span><span class="co"># Switch to another section</span></span>
+<span><span class="fu">db_switch_section</span><span class="op">(</span><span class="st">"labour"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="unified-api">Unified API<a class="anchor" aria-label="anchor" href="#unified-api"></a>
+</h3>
+<p>The same functions work in both modes:</p>
+<table class="table">
+<colgroup>
+<col width="27%">
+<col width="30%">
+<col width="41%">
+</colgroup>
+<thead><tr class="header">
+<th>Function</th>
+<th>Hive Mode</th>
+<th>DuckLake Mode</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>db_describe(public=TRUE)</code></td>
+<td>Copies to <code>_catalog/</code>
+</td>
+<td>Syncs to master SQLite</td>
+</tr>
+<tr class="even">
+<td><code>db_set_public()</code></td>
+<td>Same</td>
+<td>Same</td>
+</tr>
+<tr class="odd">
+<td><code>db_list_public()</code></td>
+<td>Lists <code>_catalog/</code>
+</td>
+<td>Queries master</td>
+</tr>
+<tr class="even">
+<td><code>db_sync_catalog()</code></td>
+<td>Syncs JSON files</td>
+<td>Syncs master entries</td>
+</tr>
+</tbody>
+</table>
+<hr>
+</div>
+</div>
+<div class="section level2">
 <h2 id="putting-it-together">Putting It Together<a class="anchor" aria-label="anchor" href="#putting-it-together"></a>
 </h2>
 <p>Here’s how a typical workflow might look:</p>
 <div class="section level3">
 <h3 id="publishing-data-producer">Publishing Data (Producer)<a class="anchor" aria-label="anchor" href="#publishing-data-producer"></a>
 </h3>
-<div class="sourceCode" id="cb24"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb30"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/CathalByrneGit/datapond" class="external-link">datapond</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Connect with SQLite catalog</span></span>
@@ -700,7 +896,7 @@ the Parquet data files still use file system permissions.</p>
 <div class="section level3">
 <h3 id="consuming-data-consumer">Consuming Data (Consumer)<a class="anchor" aria-label="anchor" href="#consuming-data-consumer"></a>
 </h3>
-<div class="sourceCode" id="cb25"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb31"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/CathalByrneGit/datapond" class="external-link">datapond</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Connect (read-only access is fine)</span></span>
@@ -793,6 +989,21 @@ guarantees</td>
 <td><strong>Data dictionary</strong></td>
 <td>Documentation of all datasets, their columns, types, and
 descriptions</td>
+</tr>
+<tr class="even">
+<td><strong>Public catalog</strong></td>
+<td>Shared location for metadata, enabling discovery without data
+access</td>
+</tr>
+<tr class="odd">
+<td><strong>Master catalog</strong></td>
+<td>Central SQLite database tracking all sections in multi-catalog
+DuckLake</td>
+</tr>
+<tr class="even">
+<td><strong>Section</strong></td>
+<td>An organisational unit (e.g., Trade, Labour) with its own data and
+catalog</td>
 </tr>
 </tbody>
 </table>

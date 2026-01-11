@@ -238,9 +238,77 @@
 <span><span class="fu">writexl</span><span class="fu">::</span><span class="fu">write_xlsx</span><span class="op">(</span><span class="va">dict</span>, <span class="st">"data_dictionary.xlsx"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
+<h3 id="public-catalog-organisation-wide-discovery">Public Catalog (Organisation-wide Discovery)<a class="anchor" aria-label="anchor" href="#public-catalog-organisation-wide-discovery"></a>
+</h3>
+<p>Make metadata discoverable across the organisation while keeping data secure via folder permissions.</p>
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/CathalByrneGit/datapond" class="external-link">datapond</a></span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/db_connect.html">db_connect</a></span><span class="op">(</span>path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Document and make discoverable in one step</span></span>
+<span><span class="fu"><a href="reference/db_describe.html">db_describe</a></span><span class="op">(</span></span>
+<span>  section <span class="op">=</span> <span class="st">"Trade"</span>,</span>
+<span>  dataset <span class="op">=</span> <span class="st">"Imports"</span>,</span>
+<span>  description <span class="op">=</span> <span class="st">"Monthly import values"</span>,</span>
+<span>  owner <span class="op">=</span> <span class="st">"Trade Section"</span>,</span>
+<span>  public <span class="op">=</span> <span class="cn">TRUE</span>  <span class="co"># Copies metadata to shared _catalog/ folder</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Or use convenience functions</span></span>
+<span><span class="fu">db_set_public</span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span>
+<span><span class="fu">db_set_private</span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span>
+<span><span class="fu">db_is_public</span><span class="op">(</span>section <span class="op">=</span> <span class="st">"Trade"</span>, dataset <span class="op">=</span> <span class="st">"Imports"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Anyone can discover what data exists (even without data access)</span></span>
+<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span><span class="co">#&gt;   section dataset     description          owner</span></span>
+<span><span class="co">#&gt; 1   Trade Imports Monthly import values Trade Section</span></span>
+<span><span class="co">#&gt; 2  Labour Employment Employment statistics Labour Section</span></span>
+<span></span>
+<span><span class="co"># Sync catalog after manual metadata changes</span></span>
+<span><span class="fu">db_sync_catalog</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="multi-catalog-ducklake-enterprise-setup">Multi-Catalog DuckLake (Enterprise Setup)<a class="anchor" aria-label="anchor" href="#multi-catalog-ducklake-enterprise-setup"></a>
+</h3>
+<p>For larger organisations with multiple sections, use a master discovery catalog:</p>
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/CathalByrneGit/datapond" class="external-link">datapond</a></span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Admin: Set up master catalog (one-time)</span></span>
+<span><span class="fu">db_setup_master</span><span class="op">(</span><span class="st">"//CSO-NAS/DataLake/_master/discovery.sqlite"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Register sections</span></span>
+<span><span class="fu">db_register_section</span><span class="op">(</span></span>
+<span>  section <span class="op">=</span> <span class="st">"trade"</span>,</span>
+<span>  catalog_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/catalog.sqlite"</span>,</span>
+<span>  data_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/trade/data"</span>,</span>
+<span>  owner <span class="op">=</span> <span class="st">"Trade Team"</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># User: Connect to a section</span></span>
+<span><span class="fu">db_lake_connect_section</span><span class="op">(</span><span class="st">"trade"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Work with data</span></span>
+<span><span class="va">imports</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/db_lake_read.html">db_lake_read</a></span><span class="op">(</span>table <span class="op">=</span> <span class="st">"imports"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Document and publish (same API as Hive mode!)</span></span>
+<span><span class="fu"><a href="reference/db_describe.html">db_describe</a></span><span class="op">(</span></span>
+<span>  table <span class="op">=</span> <span class="st">"imports"</span>,</span>
+<span>  description <span class="op">=</span> <span class="st">"Monthly import statistics"</span>,</span>
+<span>  public <span class="op">=</span> <span class="cn">TRUE</span>  <span class="co"># Syncs to master catalog</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Discover all public tables across all sections</span></span>
+<span><span class="fu">db_list_public</span><span class="op">(</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Switch sections</span></span>
+<span><span class="fu">db_switch_section</span><span class="op">(</span><span class="st">"labour"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
 <h3 id="interactive-browser">Interactive Browser<a class="anchor" aria-label="anchor" href="#interactive-browser"></a>
 </h3>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/CathalByrneGit/datapond" class="external-link">datapond</a></span><span class="op">)</span></span>
 <span><span class="fu"><a href="reference/db_connect.html">db_connect</a></span><span class="op">(</span>path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake"</span><span class="op">)</span></span>
 <span></span>
@@ -352,7 +420,7 @@
 <h3 id="recommended-sqlite-for-cso">Recommended: SQLite for CSO<a class="anchor" aria-label="anchor" href="#recommended-sqlite-for-cso"></a>
 </h3>
 <p>For most CSO use cases with shared network drives, use SQLite:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/db_lake_connect.html">db_lake_connect</a></span><span class="op">(</span></span>
 <span>  catalog_type <span class="op">=</span> <span class="st">"sqlite"</span>,</span>
 <span>  metadata_path <span class="op">=</span> <span class="st">"//CSO-NAS/DataLake/catalog.sqlite"</span>,</span>
@@ -370,7 +438,7 @@
 <h3 id="postgresql-for-production-scale">PostgreSQL for Production Scale<a class="anchor" aria-label="anchor" href="#postgresql-for-production-scale"></a>
 </h3>
 <p>If you need true multi-user concurrent writes or remote access:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/db_lake_connect.html">db_lake_connect</a></span><span class="op">(</span></span>
 <span>  catalog_type <span class="op">=</span> <span class="st">"postgres"</span>,</span>
 <span>  metadata_path <span class="op">=</span> <span class="st">"dbname=ducklake_catalog host=db.cso.ie"</span>,</span>
@@ -611,6 +679,89 @@
 <td><code><a href="reference/db_search_columns.html">db_search_columns()</a></code></td>
 <td>Both</td>
 <td>Find columns by name across all datasets</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="section level3">
+<h3 id="public-catalog">Public Catalog<a class="anchor" aria-label="anchor" href="#public-catalog"></a>
+</h3>
+<table class="table">
+<colgroup>
+<col width="33%">
+<col width="33%">
+<col width="33%">
+</colgroup>
+<thead><tr class="header">
+<th>Function</th>
+<th>Mode</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>db_set_public()</code></td>
+<td>Both</td>
+<td>Make metadata discoverable organisation-wide</td>
+</tr>
+<tr class="even">
+<td><code>db_set_private()</code></td>
+<td>Both</td>
+<td>Remove from public catalog</td>
+</tr>
+<tr class="odd">
+<td><code>db_is_public()</code></td>
+<td>Both</td>
+<td>Check if in public catalog</td>
+</tr>
+<tr class="even">
+<td><code>db_list_public()</code></td>
+<td>Both</td>
+<td>List all discoverable datasets/tables</td>
+</tr>
+<tr class="odd">
+<td><code>db_sync_catalog()</code></td>
+<td>Both</td>
+<td>Sync public catalog with source metadata</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="section level3">
+<h3 id="multi-catalog-ducklake">Multi-Catalog (DuckLake)<a class="anchor" aria-label="anchor" href="#multi-catalog-ducklake"></a>
+</h3>
+<table class="table">
+<thead><tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr class="odd">
+<td><code>db_setup_master()</code></td>
+<td>Create master discovery catalog</td>
+</tr>
+<tr class="even">
+<td><code>db_register_section()</code></td>
+<td>Register a section in master catalog</td>
+</tr>
+<tr class="odd">
+<td><code>db_unregister_section()</code></td>
+<td>Remove section from master catalog</td>
+</tr>
+<tr class="even">
+<td><code>db_list_registered_sections()</code></td>
+<td>List all registered sections</td>
+</tr>
+<tr class="odd">
+<td><code>db_lake_connect_section()</code></td>
+<td>Connect to section via master catalog</td>
+</tr>
+<tr class="even">
+<td><code>db_current_section()</code></td>
+<td>Get current section name</td>
+</tr>
+<tr class="odd">
+<td><code>db_switch_section()</code></td>
+<td>Switch to a different section</td>
 </tr>
 </tbody>
 </table>
