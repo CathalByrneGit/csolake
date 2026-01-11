@@ -1,6 +1,7 @@
 # browser_demo_ducklake.R
 # ========================
 # Interactive demo of db_browser() with sample DuckLake data
+# Demonstrates multi-catalog architecture with master discovery catalog
 #
 # Run with:
 #   source(system.file("examples", "browser_demo_ducklake.R", package = "datapond"))
@@ -17,12 +18,37 @@ dir.create(lake_path)
 
 cat("Setting up DuckLake at:", lake_path, "\n\n")
 
-# Connect in DuckLake mode
-db_lake_connect(
-  catalog = "demo",
-  metadata_path = file.path(lake_path, "catalog.ducklake"),
-  data_path = lake_path
+# =============================================================================
+# Set up Master Discovery Catalog (organisation-wide)
+# =============================================================================
+# The master catalog is a lightweight SQLite database that indexes public
+# tables across all section catalogs for organisation-wide discovery.
+
+master_path <- file.path(lake_path, "_master", "discovery.sqlite")
+db_setup_master(master_path)
+cat("✓ Master discovery catalog created\n")
+
+# Set as default for this session
+options(datapond.master_catalog = master_path)
+
+# =============================================================================
+# Register section and connect
+# =============================================================================
+# Each section has its own DuckLake catalog. Register it with the master.
+
+db_register_section(
+
+  section = "demo",
+  catalog_path = file.path(lake_path, "demo", "catalog.ducklake"),
+  data_path = file.path(lake_path, "demo", "data"),
+  description = "Demo section with sample data",
+  owner = "Demo Team",
+  master_path = master_path
 )
+cat("✓ Section 'demo' registered\n")
+
+# Connect using section lookup (gets paths from master catalog)
+db_lake_connect_section("demo", master_path = master_path)
 
 # =============================================================================
 # Create schemas and tables
@@ -156,6 +182,53 @@ db_describe(
 cat("✓ Documentation added\n")
 
 # =============================================================================
+# Publish tables to Master Catalog
+# =============================================================================
+# Only data owners (with section access) can publish tables.
+# Published metadata is synced to the master catalog for discovery.
+
+cat("\nPublishing to master catalog...\n")
+
+# Publish selected tables (using public=TRUE in db_describe)
+db_describe(
+  schema = "trade",
+  table = "imports",
+  public = TRUE  # Syncs to master discovery catalog
+)
+cat("✓ trade.imports published\n")
+
+db_describe(
+  schema = "trade",
+  table = "exports",
+  public = TRUE
+)
+cat("✓ trade.exports published\n")
+
+db_describe(
+  schema = "reference",
+  table = "countries",
+  public = TRUE
+)
+cat("✓ reference.countries published\n")
+
+# Labour and health tables remain private
+cat("  labour.employment - private (internal only)\n")
+cat("  health.hospitals - private (internal only)\n")
+
+# Show public catalog contents
+cat("\nPublic tables in master catalog:\n")
+public_tables <- db_list_public()
+if (nrow(public_tables) > 0) {
+  print(public_tables[, c("section", "schema", "table", "description")])
+} else {
+  cat("  (none)\n")
+}
+
+# Show registered sections
+cat("\nRegistered sections:\n")
+print(db_list_registered_sections())
+
+# =============================================================================
 # Show what we created
 # =============================================================================
 
@@ -163,6 +236,8 @@ cat("\n")
 cat("=" |> rep(60) |> paste(collapse = ""), "\n")
 cat("DUCKLAKE TEST DATA READY\n")
 cat("=" |> rep(60) |> paste(collapse = ""), "\n\n")
+
+cat("Current section: ", db_current_section(), "\n")
 
 cat("Schemas and tables:\n")
 for (sch in db_list_schemas()) {
@@ -186,6 +261,7 @@ db_status()
 
 cat("\n")
 cat("Launching browser...\n")
+cat("Try the 'Public Catalog' tab to see published tables and sections!\n")
 cat("(Close the browser window to return to R)\n\n")
 
 db_browser()
@@ -193,5 +269,6 @@ db_browser()
 # Cleanup
 cat("\nCleaning up...\n")
 db_disconnect()
+options(datapond.master_catalog = NULL)
 unlink(lake_path, recursive = TRUE)
 cat("Done!\n")
