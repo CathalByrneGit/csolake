@@ -49,16 +49,16 @@ health_path <- file.path(data_path, "health")
 shared_path <- file.path(data_path, "shared")
 
 # Create directories
-dir.create(trade_path, recursive = TRUE, showWarnings = FALSE)
-dir.create(labour_path, recursive = TRUE, showWarnings = FALSE)
-dir.create(health_path, recursive = TRUE, showWarnings = FALSE)
-dir.create(shared_path, recursive = TRUE, showWarnings = FALSE)
+# dir.create(trade_path, recursive = TRUE, showWarnings = FALSE)
+# dir.create(labour_path, recursive = TRUE, showWarnings = FALSE)
+# dir.create(health_path, recursive = TRUE, showWarnings = FALSE)
+# dir.create(shared_path, recursive = TRUE, showWarnings = FALSE)
 
 # Create schemas with paths
-db_create_schema("trade", path = trade_path)
-db_create_schema("labour", path = labour_path)
-db_create_schema("health", path = health_path)
-db_create_schema("reference", path = shared_path)
+db_create_schema("trade")
+db_create_schema("labour")
+db_create_schema("health")
+db_create_schema("reference")
 
 cat("Created schemas with custom paths\n")
 cat("  trade:     ", trade_path, "\n")
@@ -189,6 +189,7 @@ db_describe(
 )
 
 cat("Documentation added\n")
+print(list.dirs(lake_path))
 
 # =============================================================================
 # Show what we created
@@ -248,7 +249,6 @@ cat("Check the 'Public Catalog' tab for information about access control.\n")
 cat("(Close the browser window to return to R)\n\n")
 
 db_browser()
-
 # Cleanup
 cat("\nCleaning up...\n")
 db_disconnect()
